@@ -1,5 +1,5 @@
 import React from 'react';
-import { Clock, User, History, LogOut, Plus, FileText, Activity } from 'lucide-react';
+import { Clock, User, History, LogOut, Plus, FileText, Activity, Truck } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Progress } from './ui/progress';
@@ -41,7 +41,7 @@ export function MainScreen({ onNavigate }: MainScreenProps) {
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               <div className="bg-blue-600 p-2 rounded-lg">
-                <Clock className="size-6 text-white" />
+                <Truck className="size-8 text-white" />
               </div>
               <div>
                 <h1 className="text-xl">TruckLog Pro</h1>

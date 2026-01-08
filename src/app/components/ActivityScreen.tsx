@@ -3,6 +3,9 @@ import { ArrowLeft, Play, Square, Clock, MapPin, Calendar } from 'lucide-react';
 import { Button } from './ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Badge } from './ui/badge';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog';
+import { Label } from './ui/label';
+import { Textarea } from './ui/textarea';
 import { useAuth } from '../contexts/AuthContext';
 import { useTrips, ELDEntry } from '../contexts/TripContext';
 import { toast } from 'sonner';
@@ -17,6 +20,9 @@ export function ActivityScreen({ onNavigate }: ActivityScreenProps) {
   const { user } = useAuth();
   const { activeActivity, todayActivities, startActivity, stopActivity } = useTrips();
   const [elapsedTime, setElapsedTime] = useState(0);
+  const [showNoteDialog, setShowNoteDialog] = useState(false);
+  const [selectedActivity, setSelectedActivity] = useState<ActivityStatus | null>(null);
+  const [noteText, setNoteText] = useState('');
 
   // Update elapsed time every second
   useEffect(() => {
@@ -96,8 +102,25 @@ export function ActivityScreen({ onNavigate }: ActivityScreenProps) {
       return;
     }
 
-    startActivity(status);
-    toast.success(`Started ${getStatusLabel(status)}`);
+    setSelectedActivity(status);
+    setNoteText('');
+    setShowNoteDialog(true);
+  };
+
+  const handleConfirmStart = () => {
+    if (!selectedActivity) return;
+
+    startActivity(selectedActivity, noteText.trim() || undefined);
+    toast.success(`Started ${getStatusLabel(selectedActivity)}`);
+    setShowNoteDialog(false);
+    setSelectedActivity(null);
+    setNoteText('');
+  };
+
+  const handleCancelStart = () => {
+    setShowNoteDialog(false);
+    setSelectedActivity(null);
+    setNoteText('');
   };
 
   const handleStopActivity = () => {
@@ -372,6 +395,11 @@ export function ActivityScreen({ onNavigate }: ActivityScreenProps) {
                         <MapPin className="size-4" />
                         <span>{activeActivity.location}</span>
                       </div>
+                      {activeActivity.notes && (
+                        <div className="mt-2 p-2 bg-white rounded border border-blue-200 text-sm text-gray-600 italic">
+                          {activeActivity.notes}
+                        </div>
+                      )}
                       <div className="mt-2 text-sm">
                         <span className="font-semibold">Duration: </span>
                         <span className="font-mono">{formatElapsedTime(elapsedTime)}</span>
@@ -420,6 +448,40 @@ export function ActivityScreen({ onNavigate }: ActivityScreenProps) {
           </div>
         </div>
       </main>
+
+      {/* Note Dialog */}
+      <Dialog open={showNoteDialog} onOpenChange={setShowNoteDialog}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Add Note</DialogTitle>
+            <DialogDescription>
+              Add a note for the activity you are starting.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Label htmlFor="note">Note</Label>
+            <Textarea
+              id="note"
+              value={noteText}
+              onChange={(e) => setNoteText(e.target.value)}
+              placeholder="Enter a note..."
+            />
+          </div>
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={handleCancelStart}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={handleConfirmStart}
+            >
+              Start Activity
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

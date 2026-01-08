@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
+import { obtainToken, setTokens, clearTokens, fetchMe } from '../utils/api';
 
 export interface User {
   id: string;
@@ -33,19 +34,24 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
 
   const login = async (username: string, password: string): Promise<boolean> => {
-    // Simulate API call
-    await new Promise(resolve => setTimeout(resolve, 500));
-    
-    // Accept any non-empty credentials for demo
-    if (username && password) {
-      setUser(mockUser);
-      return true;
+    try {
+      const res = await obtainToken(username, password);
+      if (res.ok && res.data && res.data.access && res.data.refresh) {
+        setTokens({ access: res.data.access, refresh: res.data.refresh });
+        // Minimal user info until backend provides a user endpoint
+        setUser({ ...mockUser, name: username, email: username });
+        fetchMe();
+        return true;
+      }
+      return false;
+    } catch (e) {
+      return false;
     }
-    return false;
   };
 
   const loginWithGoogle = async (): Promise<boolean> => {
-    // Simulate Google OAuth
+    // Unimplemented: 
+    // fall back to mock Google flow; integrate real OAuth separately
     await new Promise(resolve => setTimeout(resolve, 800));
     setUser({
       ...mockUser,
@@ -56,6 +62,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   const logout = () => {
+    clearTokens();
     setUser(null);
   };
 
