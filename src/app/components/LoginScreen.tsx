@@ -137,7 +137,7 @@ export function LoginScreen() {
           </Button>
 
           <p className="text-center text-xs text-gray-500 mt-4">
-            Demo: Use any username and password to login
+            Demo: Use "driver" and "changepassword" to login
           </p>
         </CardContent>
       </Card>
