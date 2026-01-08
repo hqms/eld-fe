@@ -1,16 +1,10 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { ArrowLeft, MapPin, Navigation, Package, Clock, Map } from 'lucide-react';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from './ui/select';
+// select component not used anymore; locations use Geoapify autocomplete
 import { useAuth } from '../contexts/AuthContext';
 import { useTrips } from '../contexts/TripContext';
 import { toast } from 'sonner';
@@ -43,6 +37,35 @@ const LOCATIONS = [
   'Atlanta, GA',
 ];
 
+async function fetchGeoSuggestions(query: string, apiKey: string): Promise<string[]> {
+  if (!query || query.trim().length === 0) {
+    return [];
+  }
+
+  const q = encodeURIComponent(query);
+  if (!apiKey) {
+    // fallback to local list
+    const filtered = LOCATIONS.filter(l => l.toLowerCase().includes(query.toLowerCase())).slice(0, 6);
+    return filtered;
+  }
+
+  try {
+    const url = `https://api.geoapify.com/v1/geocode/autocomplete?text=${q}&limit=6&apiKey=${apiKey}`;
+    const res = await fetch(url, { method: 'GET' });
+    if (!res.ok) {
+      return [];
+    }
+    const json = await res.json();
+    const items = (json.features || []).map((f: any) => f.properties?.formatted).filter(Boolean);
+    // uniq preserve order
+    const uniq: string[] = [];
+    for (const it of items) if (!uniq.includes(it)) uniq.push(it);
+    return uniq.slice(0, 6);
+  } catch (e) {
+    return [];
+  }
+}
+
 export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
   const { user, updateCycleHours } = useAuth();
   const { addTrip } = useTrips();
@@ -50,7 +73,31 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
   const [currentLocation, setCurrentLocation] = useState('');
   const [pickupLocation, setPickupLocation] = useState('');
   const [dropoffLocation, setDropoffLocation] = useState('');
+  const [currentSuggestions, setCurrentSuggestions] = useState<string[]>([]);
+  const [pickupSuggestions, setPickupSuggestions] = useState<string[]>([]);
+  const [dropoffSuggestions, setDropoffSuggestions] = useState<string[]>([]);
+  const [showCurrentSuggestions, setShowCurrentSuggestions] = useState(false);
+  const [showPickupSuggestions, setShowPickupSuggestions] = useState(false);
+  const [showDropoffSuggestions, setShowDropoffSuggestions] = useState(false);
+  const suggRef = useRef<HTMLDivElement | null>(null);
+  const formRef = useRef<HTMLFormElement | null>(null);
+  const geoApiKey = import.meta.env.VITE_GEOAPIFY_API_KEY || '';
   const [cycleHoursUsed, setCycleHoursUsed] = useState('');
+
+  useEffect(() => {
+    const handleDocClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      const inside = (formRef.current && formRef.current.contains(target));
+      if (!inside) {
+        setShowCurrentSuggestions(false);
+        setShowPickupSuggestions(false);
+        setShowDropoffSuggestions(false);
+      }
+    };
+
+    document.addEventListener('click', handleDocClick);
+    return () => document.removeEventListener('click', handleDocClick);
+  }, []);
 
   // Calculate estimated distance and duration (simplified)
   const routeInfo = useMemo(() => {
@@ -137,62 +184,98 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
               <CardDescription>Enter your trip information</CardDescription>
             </CardHeader>
             <CardContent>
-              <form onSubmit={handleSubmit} className="space-y-6">
-                <div className="space-y-2">
+              <form ref={formRef} onSubmit={handleSubmit} className="space-y-6">
+                <div className="space-y-2 relative" ref={suggRef}>
                   <Label htmlFor="current-location" className="flex items-center gap-2">
                     <Navigation className="size-4" />
                     Current Location
                   </Label>
-                  <Select value={currentLocation} onValueChange={setCurrentLocation}>
-                    <SelectTrigger id="current-location">
-                      <SelectValue placeholder="Select current location" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {LOCATIONS.map((location) => (
-                        <SelectItem key={location} value={location}>
-                          {location}
-                        </SelectItem>
+                  <Input
+                    id="current-location"
+                    value={currentLocation}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setCurrentLocation(v);
+                      fetchGeoSuggestions(v, geoApiKey).then((res) => { setCurrentSuggestions(res); setShowCurrentSuggestions(true); });
+                    }}
+                    placeholder="Start typing an address"
+                    onFocus={() => { if (currentSuggestions.length) setShowCurrentSuggestions(true); }}
+                  />
+                  {showCurrentSuggestions && currentSuggestions.length > 0 && (
+                    <div className="absolute z-40 mt-1 w-full bg-white rounded-md shadow-lg max-h-60 overflow-auto">
+                      {currentSuggestions.map((s) => (
+                        <div
+                          key={s}
+                          className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
+                          onClick={() => { setCurrentLocation(s); setShowCurrentSuggestions(false); }}
+                        >
+                          {s}
+                        </div>
                       ))}
-                    </SelectContent>
-                  </Select>
+                    </div>
+                  )}
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-2 relative">
                   <Label htmlFor="pickup-location" className="flex items-center gap-2">
                     <Package className="size-4" />
                     Pickup Location
                   </Label>
-                  <Select value={pickupLocation} onValueChange={setPickupLocation}>
-                    <SelectTrigger id="pickup-location">
-                      <SelectValue placeholder="Select pickup location" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {LOCATIONS.map((location) => (
-                        <SelectItem key={location} value={location}>
-                          {location}
-                        </SelectItem>
+                  <Input
+                    id="pickup-location"
+                    value={pickupLocation}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setPickupLocation(v);
+                      fetchGeoSuggestions(v, geoApiKey).then((res) => { setPickupSuggestions(res); setShowPickupSuggestions(true); });
+                    }}
+                    placeholder="Start typing pickup address"
+                    onFocus={() => { if (pickupSuggestions.length) setShowPickupSuggestions(true); }}
+                  />
+                  {showPickupSuggestions && pickupSuggestions.length > 0 && (
+                    <div className="absolute z-40 mt-1 w-full bg-white rounded-md shadow-lg max-h-60 overflow-auto">
+                      {pickupSuggestions.map((s) => (
+                        <div
+                          key={s}
+                          className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
+                          onClick={() => { setPickupLocation(s); setShowPickupSuggestions(false); }}
+                        >
+                          {s}
+                        </div>
                       ))}
-                    </SelectContent>
-                  </Select>
+                    </div>
+                  )}
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-2 relative">
                   <Label htmlFor="dropoff-location" className="flex items-center gap-2">
                     <MapPin className="size-4" />
                     Dropoff Location
                   </Label>
-                  <Select value={dropoffLocation} onValueChange={setDropoffLocation}>
-                    <SelectTrigger id="dropoff-location">
-                      <SelectValue placeholder="Select dropoff location" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {LOCATIONS.map((location) => (
-                        <SelectItem key={location} value={location}>
-                          {location}
-                        </SelectItem>
+                  <Input
+                    id="dropoff-location"
+                    value={dropoffLocation}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setDropoffLocation(v);
+                      fetchGeoSuggestions(v, geoApiKey).then((res) => { setDropoffSuggestions(res); setShowDropoffSuggestions(true); });
+                    }}
+                    placeholder="Start typing dropoff address"
+                    onFocus={() => { if (dropoffSuggestions.length) setShowDropoffSuggestions(true); }}
+                  />
+                  {showDropoffSuggestions && dropoffSuggestions.length > 0 && (
+                    <div className="absolute z-40 mt-1 w-full bg-white rounded-md shadow-lg max-h-60 overflow-auto">
+                      {dropoffSuggestions.map((s) => (
+                        <div
+                          key={s}
+                          className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
+                          onClick={() => { setDropoffLocation(s); setShowDropoffSuggestions(false); }}
+                        >
+                          {s}
+                        </div>
                       ))}
-                    </SelectContent>
-                  </Select>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2">

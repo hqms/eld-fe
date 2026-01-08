@@ -6,6 +6,7 @@ import { Progress } from './ui/progress';
 import { Badge } from './ui/badge';
 import { useAuth } from '../contexts/AuthContext';
 import { useTrips } from '../contexts/TripContext';
+import { getLocalUser } from '../utils/api';
 
 interface MainScreenProps {
   onNavigate: (screen: 'main' | 'new-trip' | 'recap' | 'activity') => void;
@@ -139,11 +140,11 @@ export function MainScreen({ onNavigate }: MainScreenProps) {
             <CardContent className="space-y-4">
               <div>
                 <p className="text-sm text-gray-500">Name</p>
-                <p className="mt-1">{user.name}</p>
+                <p className="mt-1">{getLocalUser()?.last_name}, {getLocalUser()?.first_name}</p>
               </div>
               <div>
                 <p className="text-sm text-gray-500">Email</p>
-                <p className="mt-1 text-sm">{user.email}</p>
+                <p className="mt-1 text-sm">{getLocalUser()?.email}</p>
               </div>
               <div>
                 <p className="text-sm text-gray-500">License Number</p>
