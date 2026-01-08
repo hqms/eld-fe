@@ -8,6 +8,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/
 import { useAuth } from '../contexts/AuthContext';
 import { useTrips } from '../contexts/TripContext';
 import { toast } from 'sonner';
+import maplibregl from 'maplibre-gl';
+import 'maplibre-gl/dist/maplibre-gl.css';
+import type { Map as MaplibreMap } from 'maplibre-gl';
 
 interface NewTripScreenProps {
   onNavigate: (screen: 'main' | 'new-trip' | 'recap' | 'activity') => void;
@@ -37,16 +40,22 @@ const LOCATIONS = [
   'Atlanta, GA',
 ];
 
-async function fetchGeoSuggestions(query: string, apiKey: string): Promise<string[]> {
+interface Suggestion {
+  label: string;
+  lat: number;
+  lon: number;
+}
+
+async function fetchGeoSuggestions(query: string, apiKey: string): Promise<Suggestion[]> {
   if (!query || query.trim().length === 0) {
     return [];
   }
 
   const q = encodeURIComponent(query);
   if (!apiKey) {
-    // fallback to local list
+    // fallback to local list (no coords)
     const filtered = LOCATIONS.filter(l => l.toLowerCase().includes(query.toLowerCase())).slice(0, 6);
-    return filtered;
+    return filtered.map((label) => ({ label, lat: 0, lon: 0 }));
   }
 
   try {
@@ -56,10 +65,14 @@ async function fetchGeoSuggestions(query: string, apiKey: string): Promise<strin
       return [];
     }
     const json = await res.json();
-    const items = (json.features || []).map((f: any) => f.properties?.formatted).filter(Boolean);
-    // uniq preserve order
-    const uniq: string[] = [];
-    for (const it of items) if (!uniq.includes(it)) uniq.push(it);
+    const items = (json.features || []).map((f: any) => ({
+      label: f.properties?.formatted,
+      lat: f.properties?.lat,
+      lon: f.properties?.lon,
+    })).filter((i: any) => i.label);
+    // uniq by label preserve order
+    const uniq: Suggestion[] = [];
+    for (const it of items) if (!uniq.find(u => u.label === it.label)) uniq.push(it);
     return uniq.slice(0, 6);
   } catch (e) {
     return [];
@@ -73,14 +86,17 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
   const [currentLocation, setCurrentLocation] = useState('');
   const [pickupLocation, setPickupLocation] = useState('');
   const [dropoffLocation, setDropoffLocation] = useState('');
-  const [currentSuggestions, setCurrentSuggestions] = useState<string[]>([]);
-  const [pickupSuggestions, setPickupSuggestions] = useState<string[]>([]);
-  const [dropoffSuggestions, setDropoffSuggestions] = useState<string[]>([]);
+  const [currentSuggestions, setCurrentSuggestions] = useState<Suggestion[]>([]);
+  const [pickupSuggestions, setPickupSuggestions] = useState<Suggestion[]>([]);
+  const [dropoffSuggestions, setDropoffSuggestions] = useState<Suggestion[]>([]);
   const [showCurrentSuggestions, setShowCurrentSuggestions] = useState(false);
   const [showPickupSuggestions, setShowPickupSuggestions] = useState(false);
   const [showDropoffSuggestions, setShowDropoffSuggestions] = useState(false);
+  const [routeInfo, setRouteInfo] = useState<{ distance: number; duration: number; geometry?: [number, number][] , pickupLocation: string, dropoffLocation: string , coords: any} | null>(null);
   const suggRef = useRef<HTMLDivElement | null>(null);
   const formRef = useRef<HTMLFormElement | null>(null);
+  const mapContainerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<MaplibreMap | null>(null);
   const geoApiKey = import.meta.env.VITE_GEOAPIFY_API_KEY || '';
   const [cycleHoursUsed, setCycleHoursUsed] = useState('');
 
@@ -99,22 +115,116 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
     return () => document.removeEventListener('click', handleDocClick);
   }, []);
 
-  // Calculate estimated distance and duration (simplified)
-  const routeInfo = useMemo(() => {
-    if (!pickupLocation || !dropoffLocation) {
-      return null;
+  // Create / update MapLibre map when route geometry changes
+  useEffect(() => {
+    if (!routeInfo || !routeInfo.geometry || routeInfo.geometry.length === 0) {
+      // destroy map if exists
+      if (mapRef.current) {
+        mapRef.current.remove();
+        mapRef.current = null;
+      }
+      return;
     }
 
-    // Simulate route calculation
-    const distance = Math.floor(Math.random() * 400) + 50;
-    const duration = (distance / 60).toFixed(1);
+    const coordsLatLon = routeInfo.geometry as [number, number][]; // currently [lat, lon]
+    const coordsLonLat = coordsLatLon.map(([lat, lon]) => [lon, lat] as [number, number]);
 
-    return {
-      distance,
-      duration: parseFloat(duration),
-      route: [pickupLocation, dropoffLocation],
+    const center = coordsLonLat[Math.floor(coordsLonLat.length / 2)][0] as unknown as [number, number];
+    // create map if not existing
+    if (!mapRef.current && mapContainerRef.current) {
+      mapRef.current = new maplibregl.Map({
+        container: mapContainerRef.current,        
+        style: 'https://api.maptiler.com/maps/streets-v4/style.json?key='+(import.meta.env.VITE_MAPTILER_API_KEY || ''),
+        center: center,        
+        zoom: 9,
+      });
+      mapRef.current.addControl(new maplibregl.NavigationControl());
+      mapRef.current.on('load', () => {
+        if (!mapRef.current) return;
+        // add route source/layer
+        if (!mapRef.current.getSource('route')) {
+          mapRef.current.addSource('route', {
+            type: 'geojson',
+            data: {
+              type: 'Feature',
+              properties: {},
+              geometry: { type: 'LineString', coordinates: routeInfo.coords[0] },
+            },
+          } as any);
+          mapRef.current.addLayer({
+            id: 'route-line',
+            type: 'line',
+            source: 'route',
+            paint: { 'line-color': '#3b82f6', 'line-width': 5 },
+          });
+        }
+        // add markers
+        const start = {lng: routeInfo.pickupLocation.lon, lat: routeInfo.pickupLocation.lat}  as unknown as [number, number];
+        const end =  {lng: routeInfo.dropoffLocation.lon, lat: routeInfo.dropoffLocation.lat}  as unknown as [number, number];
+        new maplibregl.Marker({ color: 'green' }).setLngLat(start).addTo(mapRef.current!);
+        new maplibregl.Marker({ color: 'red' }).setLngLat(end).addTo(mapRef.current!);
+        setCycleHoursUsed((routeInfo.duration).toString());
+      });
+    } else if (mapRef.current) {
+      // update source data and fly to center
+      const src = mapRef.current.getSource('route') as any | undefined;
+      const data = {
+        type: 'Feature',
+        properties: {},
+        geometry: { type: 'LineString', coordinates: coordsLonLat },
+      } as GeoJSON.Feature<GeoJSON.LineString>;
+      if (src && (src as any).setData) {
+        try { (src as any).setData(data); } catch {}
+      }
+      mapRef.current.flyTo({ center: coordsLonLat[Math.floor(coordsLonLat.length / 2)] as [number, number], zoom: 10 });
+      // remove existing markers then add new ones
+      const existing = Array.from(mapRef.current.getContainer().querySelectorAll('.maplibregl-marker'));
+      existing.forEach((n) => n.remove());
+      new maplibregl.Marker({ color: 'green' }).setLngLat(coordsLonLat[0] as [number, number]).addTo(mapRef.current);
+      new maplibregl.Marker({ color: 'red' }).setLngLat(coordsLonLat[coordsLonLat.length - 1] as [number, number]).addTo(mapRef.current);
+
+    }
+
+    return () => {
+      // do not remove map here to allow persistence; it will be removed when routeInfo cleared
     };
-  }, [pickupLocation, dropoffLocation]);
+  }, [routeInfo]);
+
+  // When pickup/dropoff selected with coords, call routing API
+  useEffect(() => {
+    const pickup = pickupSuggestions.find(s => s.label === pickupLocation);
+    const dropoff = dropoffSuggestions.find(s => s.label === dropoffLocation);
+    if (!pickup || !dropoff || !geoApiKey) {
+      // clear route if missing
+      setRouteInfo(null);
+      return;
+    }
+
+    (async () => {
+      try {
+        const waypoints = `${pickup.lat},${pickup.lon}|${dropoff.lat},${dropoff.lon}`;
+        const url = `https://api.geoapify.com/v1/routing?waypoints=${encodeURIComponent(waypoints)}&mode=truck&details=route_details&apiKey=${geoApiKey}`;
+        const res = await fetch(url);
+        if (!res.ok) return;
+        const json = await res.json();
+        // Expect geometry in features[0].geometry.coordinates as [[lon,lat],...]
+        const feat = json?.features && json.features[0];
+        const props = feat?.properties || {};
+        const dist = props?.distance || props?.distance_in_meters || 0;
+        const duration = props?.time || props?.travel_time || props?.duration || 0;
+        const coords = feat?.geometry?.coordinates || [];
+        // coords are [lon, lat] - convert to [lat, lon] for display if needed
+        const geom: [number, number][] = coords.map((c: any) => [c[1], c[0]]);
+        setRouteInfo({ distance: Math.round(dist), duration: Math.round(duration / 3600 * 10) / 10, 
+                    geometry: geom, pickupLocation: pickup, dropoffLocation: dropoff, coords: coords });
+      } catch (e) {
+        // ignore
+      }
+    })();
+  }, [pickupLocation, dropoffLocation, pickupSuggestions, dropoffSuggestions, geoApiKey]);
+
+  // Calculate estimated distance and duration (simplified)
+  // routeInfo state is managed by routing API calls when both pickup and dropoff have coordinates
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -205,11 +315,11 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
                     <div className="absolute z-40 mt-1 w-full bg-white rounded-md shadow-lg max-h-60 overflow-auto">
                       {currentSuggestions.map((s) => (
                         <div
-                          key={s}
+                          key={s.label}
                           className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
-                          onClick={() => { setCurrentLocation(s); setShowCurrentSuggestions(false); }}
+                          onClick={() => { setCurrentLocation(s.label); setShowCurrentSuggestions(false); }}
                         >
-                          {s}
+                          {s.label}
                         </div>
                       ))}
                     </div>
@@ -236,11 +346,11 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
                     <div className="absolute z-40 mt-1 w-full bg-white rounded-md shadow-lg max-h-60 overflow-auto">
                       {pickupSuggestions.map((s) => (
                         <div
-                          key={s}
+                          key={s.label}
                           className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
-                          onClick={() => { setPickupLocation(s); setShowPickupSuggestions(false); }}
+                          onClick={() => { setPickupLocation(s.label); setShowPickupSuggestions(false); }}
                         >
-                          {s}
+                          {s.label}
                         </div>
                       ))}
                     </div>
@@ -267,11 +377,11 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
                     <div className="absolute z-40 mt-1 w-full bg-white rounded-md shadow-lg max-h-60 overflow-auto">
                       {dropoffSuggestions.map((s) => (
                         <div
-                          key={s}
+                          key={s.label}
                           className="px-3 py-2 hover:bg-gray-100 cursor-pointer"
-                          onClick={() => { setDropoffLocation(s); setShowDropoffSuggestions(false); }}
+                          onClick={() => { setDropoffLocation(s.label); setShowDropoffSuggestions(false); }}
                         >
-                          {s}
+                          {s.label}
                         </div>
                       ))}
                     </div>
@@ -286,7 +396,7 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
                   <Input
                     id="cycle-hours"
                     type="number"
-                    step="0.5"
+                    step="0.1"
                     min="0"
                     placeholder="e.g., 6.5"
                     value={cycleHoursUsed}
@@ -321,44 +431,9 @@ export function NewTripScreen({ onNavigate }: NewTripScreenProps) {
               <CardContent>
                 {/* Simplified map visualization */}
                 <div className="bg-gray-100 rounded-lg p-6 h-80 flex items-center justify-center relative overflow-hidden">
-                  {routeInfo ? (
+                  {routeInfo && routeInfo.geometry ? (
                     <div className="w-full h-full relative">
-                      {/* Mock map background */}
-                      <div className="absolute inset-0 bg-gradient-to-br from-blue-50 to-green-50 opacity-50" />
-                      
-                      {/* Route visualization */}
-                      <div className="relative h-full flex flex-col justify-between py-8">
-                        {/* Pickup pin */}
-                        <div className="flex items-center gap-3">
-                          <div className="bg-green-500 p-3 rounded-full shadow-lg z-10">
-                            <Package className="size-6 text-white" />
-                          </div>
-                          <div className="bg-white px-4 py-2 rounded-lg shadow">
-                            <p className="text-sm">{pickupLocation}</p>
-                          </div>
-                        </div>
-
-                        {/* Route line */}
-                        <div className="flex-1 flex items-center pl-6">
-                          <div className="w-1 h-full bg-blue-500 rounded-full relative">
-                            <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 bg-white px-3 py-2 rounded shadow-lg whitespace-nowrap">
-                              <p className="text-xs text-gray-600">
-                                {routeInfo.distance} mi • {routeInfo.duration} hrs
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Dropoff pin */}
-                        <div className="flex items-center gap-3">
-                          <div className="bg-red-500 p-3 rounded-full shadow-lg z-10">
-                            <MapPin className="size-6 text-white" />
-                          </div>
-                          <div className="bg-white px-4 py-2 rounded-lg shadow">
-                            <p className="text-sm">{dropoffLocation}</p>
-                          </div>
-                        </div>
-                      </div>
+                      <div ref={mapContainerRef} className="w-full h-full rounded" />
                     </div>
                   ) : (
                     <div className="text-center text-gray-400">
